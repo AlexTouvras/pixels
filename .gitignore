@@ -40,8 +40,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-# smoke outputs
+# smoke / debug outputs
 scripts/.smoke-*.png
+scripts/.debug-cloud*
+_*.txt
 
 # Agent working memory ? daily task is local-only
 .state/CURRENT_TASK.md
+
+.vercel
+.env*

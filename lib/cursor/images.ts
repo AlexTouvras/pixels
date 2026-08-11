@@ -37,7 +37,19 @@ function cloudRepoUrl(): string | undefined {
 }
 
 function extractImageData(result: unknown): string | null {
-  if (!result || typeof result !== "object") return null;
+  if (!result) return null;
+  if (typeof result === "string") {
+    // Sometimes payloads are JSON strings
+    try {
+      return extractImageData(JSON.parse(result));
+    } catch {
+      if (/^[A-Za-z0-9+/=\r\n]+$/.test(result) && result.length > 200) {
+        return result.replace(/\s+/g, "");
+      }
+      return null;
+    }
+  }
+  if (typeof result !== "object") return null;
   const r = result as Record<string, unknown>;
 
   if (r.status === "success" && r.value && typeof r.value === "object") {
@@ -51,6 +63,36 @@ function extractImageData(result: unknown): string | null {
     return r.imageData;
   }
 
+  // Nested / alternate shapes from cloud tool envelopes
+  for (const key of ["result", "output", "data", "content"]) {
+    if (key in r) {
+      const nested = extractImageData(r[key]);
+      if (nested) return nested;
+    }
+  }
+
+  if (Array.isArray(r.content)) {
+    for (const block of r.content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (typeof b.data === "string" && b.data.length > 200) return b.data;
+      if (typeof b.imageData === "string") return b.imageData;
+    }
+  }
+
+  return null;
+}
+
+function harvestFromUnknown(payload: unknown): string | null {
+  const direct = extractImageData(payload);
+  if (direct) return direct;
+  try {
+    const text = JSON.stringify(payload);
+    const m = text.match(/"imageData"\s*:\s*"([A-Za-z0-9+/=\r\n]{200,})"/);
+    if (m?.[1]) return m[1].replace(/\\n/g, "");
+  } catch {
+    // ignore
+  }
   return null;
 }
 
@@ -82,11 +124,128 @@ async function readPngCandidate(filePath: string, cwd: string): Promise<Buffer |
   return null;
 }
 
-function isGenerateImageEvent(event: { type?: string; name?: string; status?: string }): boolean {
+function isGenerateImageEvent(event: {
+  type?: string;
+  name?: string;
+  status?: string;
+}): boolean {
   if (event.type !== "tool_call") return false;
+  if (event.status && event.status !== "completed") return false;
   const name = String(event.name ?? "").toLowerCase();
-  if (!name.includes("generateimage") && name !== "generate_image") return false;
-  return event.status === "completed";
+  // Cloud may use proto names; accept anything image-related
+  return (
+    name.includes("generateimage") ||
+    name.includes("generate_image") ||
+    name.includes("image")
+  );
+}
+
+async function collectImageFromRun(
+  run: {
+    stream: () => AsyncIterable<unknown>;
+    wait: () => Promise<{ status: string }>;
+    supports?: (op: string) => boolean;
+    conversation?: () => Promise<unknown>;
+  },
+): Promise<{ imageDataB64: string | null; toolFilePath: string | null }> {
+  let imageDataB64: string | null = null;
+  let toolFilePath: string | null = null;
+
+  for await (const raw of run.stream()) {
+    const event = raw as {
+      type?: string;
+      name?: string;
+      status?: string;
+      result?: unknown;
+      args?: unknown;
+      message?: unknown;
+    };
+
+    if (event.type === "tool_call") {
+      const fromResult = harvestFromUnknown(event.result);
+      if (fromResult) imageDataB64 = fromResult;
+      if (isGenerateImageEvent(event)) {
+        toolFilePath = extractFilePath(event.result) ?? toolFilePath;
+      }
+    }
+
+    if (event.type === "assistant") {
+      const fromMsg = harvestFromUnknown(event.message ?? event);
+      if (fromMsg) imageDataB64 = fromMsg;
+    }
+  }
+
+  const waited = await run.wait();
+  if (waited.status === "error" || waited.status === "cancelled") {
+    throw new Error(`Cursor agent run ${waited.status}`);
+  }
+
+  if (!imageDataB64 && run.supports?.("conversation") && run.conversation) {
+    try {
+      const conv = await run.conversation();
+      imageDataB64 = harvestFromUnknown(conv);
+    } catch {
+      // optional
+    }
+  }
+
+  return { imageDataB64, toolFilePath };
+}
+
+const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
+
+/** Cloud agents keep generated files in the VM; pull them via artifacts API. */
+async function downloadCloudImageArtifact(
+  agent: {
+    listArtifacts: () => Promise<Array<{ path: string; sizeBytes: number }>>;
+    downloadArtifact: (path: string) => Promise<Buffer>;
+  },
+  preferredPaths: string[],
+): Promise<Buffer | null> {
+  let artifacts: Array<{ path: string; sizeBytes: number }>;
+  try {
+    artifacts = await agent.listArtifacts();
+  } catch {
+    return null;
+  }
+  if (!artifacts.length) return null;
+
+  const preferred = preferredPaths
+    .filter(Boolean)
+    .map((p) => p.replace(/\\/g, "/").toLowerCase());
+
+  const ranked = [...artifacts].sort((a, b) => {
+    const aPath = a.path.replace(/\\/g, "/").toLowerCase();
+    const bPath = b.path.replace(/\\/g, "/").toLowerCase();
+    const aScore =
+      (preferred.some((p) => aPath === p || aPath.endsWith(`/${p}`)) ? 100 : 0) +
+      (IMAGE_EXT.test(aPath) ? 10 : 0) +
+      Math.min(a.sizeBytes, 1_000_000) / 1_000_000;
+    const bScore =
+      (preferred.some((p) => bPath === p || bPath.endsWith(`/${p}`)) ? 100 : 0) +
+      (IMAGE_EXT.test(bPath) ? 10 : 0) +
+      Math.min(b.sizeBytes, 1_000_000) / 1_000_000;
+    return bScore - aScore;
+  });
+
+  for (const art of ranked) {
+    if (!IMAGE_EXT.test(art.path) && art.sizeBytes < 200) continue;
+    try {
+      const buf = await agent.downloadArtifact(art.path);
+      if (buf.length > 0) return buf;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+function cloudStartingRef(): string {
+  return (
+    process.env.CURSOR_CLOUD_STARTING_REF?.trim() ||
+    process.env.VERCEL_GIT_COMMIT_REF?.trim() ||
+    "master"
+  );
 }
 
 /**
@@ -111,6 +270,13 @@ export async function generateRawImageBytes(
   let imageDataB64: string | null = null;
   let toolFilePath: string | null = null;
 
+  const promptLines = [
+    "Call the generateImage tool exactly once.",
+    `description: ${description}${transparentHint}`,
+    `filePath: ${outName}`,
+    `Write the image to ${outName} in the workspace root.`,
+  ];
+
   try {
     if (cloud) {
       const repo = cloudRepoUrl();
@@ -124,30 +290,34 @@ export async function generateRawImageBytes(
         ...(apiKey ? { apiKey } : {}),
         model: { id: modelId() },
         cloud: {
-          repos: [{ url: repo, startingRef: process.env.VERCEL_GIT_COMMIT_REF || "main" }],
+          repos: [{ url: repo, startingRef: cloudStartingRef() }],
           skipReviewerRequest: true,
         },
       });
 
       const run = await agent.send(
         [
-          "Call the generateImage tool exactly once.",
-          `description: ${description}${transparentHint}`,
-          `filePath: ${outName}`,
-          "Do not edit the repository. Do not open a PR. Do not reply with long text.",
+          ...promptLines,
+          "Do not edit source files. Do not run shell commands. Do not open a PR. Do not reply with long text.",
         ].join("\n"),
       );
+      ({ imageDataB64, toolFilePath } = await collectImageFromRun(run));
 
-      for await (const event of run.stream()) {
-        if (!isGenerateImageEvent(event)) continue;
-        const result = (event as { result?: unknown }).result;
-        imageDataB64 = extractImageData(result) ?? imageDataB64;
-        toolFilePath = extractFilePath(result) ?? toolFilePath;
+      if (imageDataB64) {
+        return {
+          bytes: Buffer.from(imageDataB64, "base64"),
+          model: IMAGE_MODEL,
+          runtime: "cloud",
+        };
       }
 
-      const waited = await run.wait();
-      if (waited.status === "error" || waited.status === "cancelled") {
-        throw new Error(`Cursor cloud agent run ${waited.status}`);
+      const fromArtifact = await downloadCloudImageArtifact(agent, [
+        toolFilePath ?? "",
+        outName,
+        `./${outName}`,
+      ]);
+      if (fromArtifact) {
+        return { bytes: fromArtifact, model: IMAGE_MODEL, runtime: "cloud" };
       }
     } else {
       await using agent = await Agent.create({
@@ -158,36 +328,20 @@ export async function generateRawImageBytes(
       });
 
       const run = await agent.send(
-        [
-          "Call the generateImage tool exactly once.",
-          `description: ${description}${transparentHint}`,
-          `filePath: ${outName}`,
-          "Do not reply with long text. Do not call any other tools.",
-        ].join("\n"),
+        [...promptLines, "Do not reply with long text. Do not call any other tools."].join(
+          "\n",
+        ),
       );
+      ({ imageDataB64, toolFilePath } = await collectImageFromRun(run));
 
-      for await (const event of run.stream()) {
-        if (!isGenerateImageEvent(event)) continue;
-        const result = (event as { result?: unknown }).result;
-        imageDataB64 = extractImageData(result) ?? imageDataB64;
-        toolFilePath = extractFilePath(result) ?? toolFilePath;
+      if (imageDataB64) {
+        return {
+          bytes: Buffer.from(imageDataB64, "base64"),
+          model: IMAGE_MODEL,
+          runtime: "local",
+        };
       }
 
-      const waited = await run.wait();
-      if (waited.status === "error" || waited.status === "cancelled") {
-        throw new Error(`Cursor agent run ${waited.status}`);
-      }
-    }
-
-    if (imageDataB64) {
-      return {
-        bytes: Buffer.from(imageDataB64, "base64"),
-        model: IMAGE_MODEL,
-        runtime: cloud ? "cloud" : "local",
-      };
-    }
-
-    if (!cloud) {
       const fromDisk =
         (toolFilePath ? await readPngCandidate(toolFilePath, workDir) : null) ??
         (await readPngCandidate(outName, workDir));
