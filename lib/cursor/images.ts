@@ -1,4 +1,5 @@
 import { Agent, CursorAgentError } from "@cursor/sdk";
+import type { RunOperation } from "@cursor/sdk";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -144,7 +145,7 @@ async function collectImageFromRun(
   run: {
     stream: () => AsyncIterable<unknown>;
     wait: () => Promise<{ status: string }>;
-    supports?: (op: string) => boolean;
+    supports?: (op: RunOperation) => boolean;
     conversation?: () => Promise<unknown>;
   },
 ): Promise<{ imageDataB64: string | null; toolFilePath: string | null }> {
