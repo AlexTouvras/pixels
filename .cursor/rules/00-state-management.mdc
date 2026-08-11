@@ -1,0 +1,36 @@
+---
+description: File-based project state — read/write .state/ instead of chat history
+alwaysApply: true
+---
+
+# State management
+
+Never rely on chat history to remember project state. Use `.state/` as the source of truth.
+
+## STATE PROTOCOL
+
+Before starting any new feature, silently read:
+
+- `.state/CURRENT_TASK.md`
+- `.state/ARCHITECTURE.md`
+
+Also skim `.state/BACKLOG.md` for the active item and **Out of scope**.
+
+If `.state/` is missing, run the personal skill `project-state` to scaffold it (idempotent) before continuing.
+
+## CHECKPOINTING
+
+When you complete a sub-task, you MUST:
+
+1. Update `.state/CURRENT_TASK.md` with progress, recent context, and blockers
+2. Tick the matching item in `.state/BACKLOG.md`
+3. Only then ask for human review
+
+## ARCHITECTURE LOGGING
+
+If you introduce a new dependency, file structure, or design pattern, document it in `.state/ARCHITECTURE.md` in the same turn.
+
+## Git
+
+- `.state/CURRENT_TASK.md` is local-only (gitignored)
+- `.state/ARCHITECTURE.md` and `.state/BACKLOG.md` stay tracked
