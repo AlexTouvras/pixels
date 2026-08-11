@@ -55,6 +55,7 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Generation failed";
+    console.error("[api/generate]", message);
     const needsAuth = /api key|401|CURSOR_API_KEY|auth|login|unauthorized/i.test(
       message,
     );
@@ -62,13 +63,16 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           error:
-            "Cursor auth missing. Add CURSOR_API_KEY to .env.local (Dashboard → Integrations → User API Keys), or run a one-time SDK login.",
+            "Cursor auth missing. Add CURSOR_API_KEY in Vercel project env (or .env.local locally).",
         },
         { status: 503 },
       );
     }
+    if (/CLOUD_REPO|repo url|VERCEL_GIT/i.test(message)) {
+      return NextResponse.json({ error: message }, { status: 503 });
+    }
     return NextResponse.json(
-      { error: "Cursor image generation failed" },
+      { error: "Cursor image generation failed", detail: message },
       { status: 502 },
     );
   }
