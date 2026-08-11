@@ -15,8 +15,12 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 
 /** Mobile share sheets include chat apps; desktop Windows often only offers Mail. */
 function prefersNativeFileShare(): boolean {
-  const ua = navigator.userAgentData;
-  if (ua && typeof ua.mobile === "boolean") return ua.mobile;
+  const nav = navigator as Navigator & {
+    userAgentData?: { mobile?: boolean };
+  };
+  if (typeof nav.userAgentData?.mobile === "boolean") {
+    return nav.userAgentData.mobile;
+  }
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
