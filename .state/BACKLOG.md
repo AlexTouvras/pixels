@@ -9,7 +9,6 @@
 
 ## Next
 
-- [x] Share sticker (512 PNG + Web Share / download)
 - [ ] Transparent background polish
 - [ ] localStorage recent prompts
 - [ ] Scaled export picker (1x / 4x / 8x)
