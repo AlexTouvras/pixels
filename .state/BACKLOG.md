@@ -9,6 +9,7 @@
 
 ## Next
 
+- [x] Share sticker (512 PNG + Web Share / download)
 - [ ] Transparent background polish
 - [ ] localStorage recent prompts
 - [ ] Scaled export picker (1x / 4x / 8x)
@@ -17,7 +18,7 @@
 
 - [ ] Soft IP rate limit for public deploy
 - [ ] CLI wrapping same pipeline
-- [ ] Authorized host deploy for Generate
+- [x] Authorized host deploy for Generate
 - [ ] Revisit Snap only if a clear upload use case appears
 
 ## Out of scope (strict)

@@ -30,3 +30,5 @@ Pixels generates game-ready pixel art: Cursor automation (`generateImage`) draft
 | 2026-08-11 | Cursor not OpenAI | User request |
 | 2026-08-11 | Generate-only UI | Snap not useful for this product |
 | 2026-08-11 | Cloud agent on Vercel | Local executor cannot run in serverless |
+| 2026-08-11 | Harvest cloud images via artifacts | Cloud `generate_image` does not stream `imageData`; use `listArtifacts`/`downloadArtifact` |
+| 2026-08-11 | Client sticker share (512 PNG) | Nearest-neighbor upscale + Web Share API / download for messaging apps |

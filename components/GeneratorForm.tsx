@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { PixelPreview } from "./PixelPreview";
+import { shareOrDownloadSticker } from "@/lib/sticker/client";
 import { COLOR_OPTIONS, SIZE_OPTIONS } from "@/lib/validation";
 
 type ResultState = {
@@ -32,7 +33,9 @@ export function GeneratorForm() {
   const [transparent, setTransparent] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [stickerBusy, setStickerBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hint, setHint] = useState<string | null>(null);
   const [result, setResult] = useState<ResultState | null>(null);
 
   const previewSrc = useMemo(
@@ -47,6 +50,7 @@ export function GeneratorForm() {
   const runGenerate = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setHint(null);
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
@@ -69,6 +73,28 @@ export function GeneratorForm() {
       setBusy(false);
     }
   }, [prompt, size, colors, transparent]);
+
+  const runSticker = useCallback(async () => {
+    if (!result) return;
+    setStickerBusy(true);
+    setError(null);
+    setHint(null);
+    try {
+      const mode = await shareOrDownloadSticker(
+        result.pngBase64,
+        `pixels-sticker-${result.width}.png`,
+      );
+      setHint(
+        mode === "shared"
+          ? "Opened your share sheet — pick Messages, WhatsApp, or save."
+          : "Downloaded 512×512 sticker PNG. Add it in Telegram / WhatsApp as a sticker.",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not build sticker");
+    } finally {
+      setStickerBusy(false);
+    }
+  }, [result]);
 
   return (
     <div className="workspace">
@@ -140,7 +166,7 @@ export function GeneratorForm() {
             <button
               type="button"
               className="btn-secondary"
-              disabled={!result}
+              disabled={!result || busy || stickerBusy}
               onClick={() =>
                 result &&
                 downloadPng(
@@ -150,6 +176,14 @@ export function GeneratorForm() {
               }
             >
               Download 1× PNG
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={!result || busy || stickerBusy}
+              onClick={() => void runSticker()}
+            >
+              {stickerBusy ? "Making sticker…" : "Download sticker"}
             </button>
           </div>
 
@@ -165,6 +199,7 @@ export function GeneratorForm() {
           ) : null}
 
           {error ? <p className="error" role="alert">{error}</p> : null}
+          {hint ? <p className="hint">{hint}</p> : null}
           {result?.model ? <p className="hint">Model {result.model}</p> : null}
         </form>
 

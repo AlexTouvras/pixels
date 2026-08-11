@@ -26,7 +26,7 @@ export function PixelPreview({
           {width}×{height}
         </span>
         {typeof colorsUsed === "number" ? <span>{colorsUsed} colors</span> : null}
-        <span>{showRaw ? "Raw AI" : "Snapped"}</span>
+        <span>{showRaw ? "Raw AI" : "Pixel"}</span>
       </div>
       <div className="preview-stage" aria-live="polite">
         {src ? (
