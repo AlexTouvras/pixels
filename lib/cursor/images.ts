@@ -195,6 +195,10 @@ async function collectImageFromRun(
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Cloud agents keep generated files in the VM; pull them via artifacts API. */
 async function downloadCloudImageArtifact(
   agent: {
@@ -202,42 +206,49 @@ async function downloadCloudImageArtifact(
     downloadArtifact: (path: string) => Promise<Buffer>;
   },
   preferredPaths: string[],
+  attempts = 4,
 ): Promise<Buffer | null> {
-  let artifacts: Array<{ path: string; sizeBytes: number }>;
-  try {
-    artifacts = await agent.listArtifacts();
-  } catch {
-    return null;
-  }
-  if (!artifacts.length) return null;
-
   const preferred = preferredPaths
     .filter(Boolean)
     .map((p) => p.replace(/\\/g, "/").toLowerCase());
 
-  const ranked = [...artifacts].sort((a, b) => {
-    const aPath = a.path.replace(/\\/g, "/").toLowerCase();
-    const bPath = b.path.replace(/\\/g, "/").toLowerCase();
-    const aScore =
-      (preferred.some((p) => aPath === p || aPath.endsWith(`/${p}`)) ? 100 : 0) +
-      (IMAGE_EXT.test(aPath) ? 10 : 0) +
-      Math.min(a.sizeBytes, 1_000_000) / 1_000_000;
-    const bScore =
-      (preferred.some((p) => bPath === p || bPath.endsWith(`/${p}`)) ? 100 : 0) +
-      (IMAGE_EXT.test(bPath) ? 10 : 0) +
-      Math.min(b.sizeBytes, 1_000_000) / 1_000_000;
-    return bScore - aScore;
-  });
-
-  for (const art of ranked) {
-    if (!IMAGE_EXT.test(art.path) && art.sizeBytes < 200) continue;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let artifacts: Array<{ path: string; sizeBytes: number }> = [];
     try {
-      const buf = await agent.downloadArtifact(art.path);
-      if (buf.length > 0) return buf;
+      artifacts = await agent.listArtifacts();
     } catch {
-      // try next
+      artifacts = [];
     }
+
+    if (artifacts.length) {
+      const ranked = [...artifacts].sort((a, b) => {
+        const aPath = a.path.replace(/\\/g, "/").toLowerCase();
+        const bPath = b.path.replace(/\\/g, "/").toLowerCase();
+        const aScore =
+          (preferred.some((p) => aPath === p || aPath.endsWith(`/${p}`)) ? 100 : 0) +
+          (IMAGE_EXT.test(aPath) ? 10 : 0) +
+          Math.min(a.sizeBytes, 1_000_000) / 1_000_000;
+        const bScore =
+          (preferred.some((p) => bPath === p || bPath.endsWith(`/${p}`)) ? 100 : 0) +
+          (IMAGE_EXT.test(bPath) ? 10 : 0) +
+          Math.min(b.sizeBytes, 1_000_000) / 1_000_000;
+        return bScore - aScore;
+      });
+
+      for (const art of ranked) {
+        if (!IMAGE_EXT.test(art.path) && art.sizeBytes < 200) continue;
+        try {
+          const buf = await agent.downloadArtifact(art.path);
+          if (buf.length > 0) return buf;
+        } catch {
+          // try next
+        }
+      }
+    }
+
+    if (attempt < attempts - 1) await sleep(1500 * (attempt + 1));
   }
+
   return null;
 }
 
@@ -287,38 +298,46 @@ export async function generateRawImageBytes(
         );
       }
 
-      await using agent = await Agent.create({
-        ...(apiKey ? { apiKey } : {}),
-        model: { id: modelId() },
-        cloud: {
-          repos: [{ url: repo, startingRef: cloudStartingRef() }],
-          skipReviewerRequest: true,
-        },
-      });
+      const cloudPrompt = [
+        ...promptLines,
+        "Do not edit source files. Do not run shell commands. Do not open a PR. Do not reply with long text.",
+      ].join("\n");
 
-      const run = await agent.send(
-        [
-          ...promptLines,
-          "Do not edit source files. Do not run shell commands. Do not open a PR. Do not reply with long text.",
-        ].join("\n"),
-      );
-      ({ imageDataB64, toolFilePath } = await collectImageFromRun(run));
+      // One automatic retry: cloud generate_image sometimes finishes with no artifact yet.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await using agent = await Agent.create({
+          ...(apiKey ? { apiKey } : {}),
+          model: { id: modelId() },
+          cloud: {
+            repos: [{ url: repo, startingRef: cloudStartingRef() }],
+            skipReviewerRequest: true,
+          },
+        });
 
-      if (imageDataB64) {
-        return {
-          bytes: Buffer.from(imageDataB64, "base64"),
-          model: IMAGE_MODEL,
-          runtime: "cloud",
-        };
-      }
+        const run = await agent.send(
+          attempt === 0
+            ? cloudPrompt
+            : `${cloudPrompt}\nPrevious attempt produced no image. Call generateImage again now.`,
+        );
+        ({ imageDataB64, toolFilePath } = await collectImageFromRun(run));
 
-      const fromArtifact = await downloadCloudImageArtifact(agent, [
-        toolFilePath ?? "",
-        outName,
-        `./${outName}`,
-      ]);
-      if (fromArtifact) {
-        return { bytes: fromArtifact, model: IMAGE_MODEL, runtime: "cloud" };
+        if (imageDataB64) {
+          return {
+            bytes: Buffer.from(imageDataB64, "base64"),
+            model: IMAGE_MODEL,
+            runtime: "cloud",
+          };
+        }
+
+        const fromArtifact = await downloadCloudImageArtifact(agent, [
+          toolFilePath ?? "",
+          outName,
+          `./${outName}`,
+          "artifacts/assets/sprite.png",
+        ]);
+        if (fromArtifact) {
+          return { bytes: fromArtifact, model: IMAGE_MODEL, runtime: "cloud" };
+        }
       }
     } else {
       await using agent = await Agent.create({

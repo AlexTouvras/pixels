@@ -43,6 +43,7 @@ next-env.d.ts
 # smoke / debug outputs
 scripts/.smoke-*.png
 scripts/.debug-cloud*
+scripts/.vercel-*
 _*.txt
 
 # Agent working memory ? daily task is local-only

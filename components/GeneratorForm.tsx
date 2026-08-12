@@ -60,7 +60,13 @@ export function GeneratorForm() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Generation failed");
+      if (!res.ok) {
+        const detail =
+          typeof data.detail === "string" && data.detail.trim()
+            ? ` (${data.detail})`
+            : "";
+        throw new Error(`${data.error ?? "Generation failed"}${detail}`);
+      }
       setResult(data);
       setShowRaw(false);
     } catch (e) {
